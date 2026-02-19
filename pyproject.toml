@@ -1,0 +1,24 @@
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W", "I", "B", "C90", "D", "UP", "S", "A", "C4", "T20", "PT", "SIM", "PL"]
+ignore = ["D100", "D104"]
+exclude = [".venv", "build", "dist"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "--cov=src --cov-report=term-missing"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+exclude = [".venv", "build", "dist"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

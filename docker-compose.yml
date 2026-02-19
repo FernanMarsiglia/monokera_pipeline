@@ -1,0 +1,138 @@
+version: '3.8'
+
+x-airflow-common:
+  &airflow-common
+  image: apache/airflow:2.8.1-python3.11
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    # AWS Credentials from .env (para boto3 directo)
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+    # Airflow Variables (para Variable.get() en DAGs)
+    # AWS Credentials
+    AIRFLOW_VAR_AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+    AIRFLOW_VAR_AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    AIRFLOW_VAR_AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+    # S3 Configuration
+    AIRFLOW_VAR_S3_BUCKET: ${SPACENEWS_S3_BUCKET:-monokera-bucket}
+    AIRFLOW_VAR_BRONZE_PREFIX: "data/bronze"
+    AIRFLOW_VAR_SILVER_PREFIX: "data/silver"
+    AIRFLOW_VAR_GOLD_PREFIX: "data/gold"
+    # Glue Jobs
+    AIRFLOW_VAR_GLUE_JOB_CLEAN_DEDUP: "spacenews-01-clean-dedup"
+    AIRFLOW_VAR_GLUE_JOB_ENRICH: "spacenews-02-enrich-topics-entities"
+    AIRFLOW_VAR_GLUE_JOB_TRENDS: "spacenews-03-trends-aggregations"
+    # SNS Notifications
+    AIRFLOW_VAR_SNS_TOPIC_ARN: "arn:aws:sns:us-east-1:311048569989:spacenews-pipeline-alerts"
+    # Redshift Configuration
+    AIRFLOW_VAR_REDSHIFT_WORKGROUP: "monokera-pipeline"
+    AIRFLOW_VAR_REDSHIFT_DATABASE: ${REDSHIFT_DB:-dev}
+    AIRFLOW_VAR_REDSHIFT_IAM_ROLE: "arn:aws:iam::311048569989:role/service-role/AmazonRedshift-CommandsAccessRole-20260115T142621"
+    # Pipeline Mode
+    AIRFLOW_VAR_LOCAL_MODE: "true"
+    # Python path to include src/
+    PYTHONPATH: /opt/airflow/src:/opt/airflow
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./src:/opt/airflow/src
+    - ./sql:/opt/airflow/sql
+    - ./glue:/opt/airflow/glue
+    - airflow-logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./requirements.txt:/requirements.txt
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /sources/logs /sources/dags /sources/plugins
+        chown -R "${AIRFLOW_UID:-50000}:0" /sources/{logs,dags,plugins}
+        exec /entrypoint airflow version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: airflow
+      _AIRFLOW_WWW_USER_PASSWORD: airflow
+    user: "0:0"
+    volumes:
+      - .:/sources
+
+  airflow-cli:
+    <<: *airflow-common
+    profiles:
+      - debug
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    command:
+      - bash
+      - -c
+      - airflow
+
+volumes:
+  postgres-db-volume:
+  airflow-logs:
