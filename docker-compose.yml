@@ -37,7 +37,7 @@ x-airflow-common:
     AIRFLOW_VAR_REDSHIFT_DATABASE: ${REDSHIFT_DB:-dev}
     AIRFLOW_VAR_REDSHIFT_IAM_ROLE: "arn:aws:iam::311048569989:role/service-role/AmazonRedshift-CommandsAccessRole-20260115T142621"
     # Pipeline Mode
-    AIRFLOW_VAR_LOCAL_MODE: "true"
+    AIRFLOW_VAR_LOCAL_MODE: "false"
     # Python path to include src/
     PYTHONPATH: /opt/airflow/src:/opt/airflow
   volumes:

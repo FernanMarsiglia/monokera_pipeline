@@ -561,11 +561,26 @@ def notify_success(**context):
     execution_date = context.get('ds', 'unknown')
     dag_run = context.get('dag_run')
     duration = None
-    
+
     if dag_run:
+        # Normalize datetimes to timezone-aware UTC to avoid subtracting naive vs aware
+        from airflow.utils import timezone as airflow_tz
+
         start_date = dag_run.start_date
-        end_date = dag_run.end_date or datetime.now()
-        duration = (end_date - start_date).total_seconds() / 60
+        end_date = dag_run.end_date or airflow_tz.utcnow()
+
+        try:
+            # If either is naive, make it aware in UTC
+            if start_date is not None and start_date.tzinfo is None:
+                start_date = airflow_tz.make_aware(start_date)
+            if end_date is not None and end_date.tzinfo is None:
+                end_date = airflow_tz.make_aware(end_date)
+
+            if start_date is not None and end_date is not None:
+                duration = (end_date - start_date).total_seconds() / 60
+        except Exception as e:
+            logger.warning(f"Could not compute duration: {e}")
+            duration = None
     
     # Get insights and tables summary from XCom
     ti = context.get('ti')

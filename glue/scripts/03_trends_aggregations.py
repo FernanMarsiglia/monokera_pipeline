@@ -207,12 +207,19 @@ def main():
     # Write topic trends (Parquet for analytics)
     topic_trends_path = f"s3://{s3_bucket}/{gold_prefix}/trends/topic_counts/ingest_date={ingest_date}/"
     print(f"\n💾 Writing topic trends to: {topic_trends_path}")
-    write_with_stats(
-        topic_trends,
-        topic_trends_path,
-        mode="overwrite",
-        format="parquet"
-    )
+    try:
+        write_with_stats(
+            topic_trends,
+            topic_trends_path,
+            mode="overwrite",
+            format="parquet"
+        )
+        print(f"✅ Successfully wrote {topic_trends.count():,} trend records to Parquet")
+    except Exception as e:
+        print(f"❌ CRITICAL ERROR writing topic trends to {topic_trends_path}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise
     
     # Write topic trends (CSV for Redshift)
     topic_trends_csv_path = f"s3://{s3_bucket}/{gold_prefix}/trends/topic_counts_csv/ingest_date={ingest_date}/"
@@ -230,12 +237,19 @@ def main():
     # Write source activity (Parquet for analytics)
     source_activity_path = f"s3://{s3_bucket}/{gold_prefix}/trends/source_activity/ingest_date={ingest_date}/"
     print(f"\n💾 Writing source activity to: {source_activity_path}")
-    write_with_stats(
-        source_activity,
-        source_activity_path,
-        mode="overwrite",
-        format="parquet"
-    )
+    try:
+        write_with_stats(
+            source_activity,
+            source_activity_path,
+            mode="overwrite",
+            format="parquet"
+        )
+        print(f"✅ Successfully wrote {source_activity.count():,} activity records to Parquet")
+    except Exception as e:
+        print(f"❌ CRITICAL ERROR writing source activity to {source_activity_path}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise
     
     # Write source activity (CSV for Redshift)
     source_activity_csv_path = f"s3://{s3_bucket}/{gold_prefix}/trends/source_activity_csv/ingest_date={ingest_date}/"

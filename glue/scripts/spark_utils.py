@@ -24,10 +24,16 @@ def get_spark(app_name: str = "GlueJob") -> SparkSession:
     )
 
 def parse_args(required_args: List[str] = None):
-    """Parse Glue job arguments"""
-    from awsglue.utils import getResolvedOptions
+    """Parse Glue job arguments.
+
+    This function is resilient to different runtimes (local, Glue, Docker). It
+    supports parsing `--KEY value` CLI pairs from `sys.argv` and falling back
+    to environment variables when CLI args are not provided. If required
+    arguments are still missing, raises a clear Exception (instead of
+    allowing argparse.SystemExit) so callers can handle it.
+    """
     import sys
-    
+
     if required_args is None:
         required_args = [
             'S3_BUCKET',
@@ -36,27 +42,51 @@ def parse_args(required_args: List[str] = None):
             'CURATED_PREFIX',
             'QUARANTINE_PREFIX'
         ]
-    
-    args = getResolvedOptions(sys.argv, required_args)
-    
-    # INGEST_DATE is often optional
-    if 'INGEST_DATE' not in required_args:
-        try:
-            ingest_date_args = getResolvedOptions(sys.argv, ['INGEST_DATE'])
-            args['INGEST_DATE'] = ingest_date_args['INGEST_DATE']
-        except:
-            args['INGEST_DATE'] = None
-    
-    # Optional prefixes
-    optional_params = ['BRONZE_PREFIX', 'SILVER_PREFIX', 'GOLD_PREFIX', 'QUARANTINE_PREFIX']
+
+    # First attempt: parse simple --KEY value pairs from sys.argv
+    cli_args = {}
+    argv = list(sys.argv[1:])
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token.startswith('--'):
+            key = token.lstrip('-')
+            # consume next token as value if present and not another flag
+            val = None
+            if i + 1 < len(argv) and not argv[i + 1].startswith('--'):
+                val = argv[i + 1]
+                i += 1
+            else:
+                val = 'true'
+            cli_args[key] = val
+        i += 1
+
+    # Build final args dict using CLI args first, then environment variables
+    args = {}
+    missing = []
+    for key in required_args:
+        if key in cli_args:
+            args[key] = cli_args[key]
+        else:
+            env_val = os.getenv(key)
+            if env_val is not None:
+                args[key] = env_val
+            else:
+                missing.append(key)
+
+    # Optional common params
+    optional_params = ['INGEST_DATE', 'BRONZE_PREFIX', 'SILVER_PREFIX', 'GOLD_PREFIX', 'QUARANTINE_PREFIX']
     for param in optional_params:
-        if param not in required_args:
-            try:
-                opt_args = getResolvedOptions(sys.argv, [param])
-                args[param] = opt_args[param]
-            except:
-                pass
-    
+        if param in cli_args:
+            args[param] = cli_args[param]
+        else:
+            env_val = os.getenv(param)
+            if env_val is not None:
+                args[param] = env_val
+
+    if missing:
+        raise Exception(f"Missing required arguments: {', '.join(missing)}. Provide as --ARG value or env vars.")
+
     return args
 
 def s3_path_join(*args: str) -> str:

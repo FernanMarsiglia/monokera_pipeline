@@ -52,17 +52,17 @@ def enrich_content(df: DataFrame, spark: SparkSession) -> DataFrame:
     
     # Classify topic
     df = df.withColumn("topic_name", classify_topic_udf(F.col("_text_for_analysis")))
-    
+
+    # Extract temporal fields from published_at
+    df = df.withColumn("published_year", F.year(F.col("published_at")))
+    df = df.withColumn("published_month", F.month(F.col("published_at")))
+    df = df.withColumn("published_day", F.dayofmonth(F.col("published_at")))
+
     # DEBUG: Show sample topics to verify no years appear
     print("\n🔍 DEBUG - Sample topic classifications (first 20):")
     sample_topics = df.select("id", "title", "topic_name", "published_year").limit(20)
     for row in sample_topics.collect():
         print(f"  ID={row['id']:6} | topic={row['topic_name']:15} | year={row['published_year']} | title={row['title'][:50]}")
-    
-    # Extract temporal fields from published_at
-    df = df.withColumn("published_year", F.year(F.col("published_at")))
-    df = df.withColumn("published_month", F.month(F.col("published_at")))
-    df = df.withColumn("published_day", F.dayofmonth(F.col("published_at")))
     
     # Convert array/struct fields to JSON strings
     # authors
@@ -133,8 +133,18 @@ def process_content_type(
     print(f"Reading from Silver: {silver_path}")
     
     try:
-        # Read from Silver
-        df = spark.read.parquet(silver_path)
+        # Check if path exists first
+        try:
+            df = spark.read.parquet(silver_path)
+            print(f"✓ Path exists and readable")
+        except Exception as path_err:
+            print(f"❌ Cannot read from {silver_path}: {str(path_err)}")
+            return {
+                "content_type": content_type,
+                "initial_count": 0,
+                "enriched_count": 0,
+                "error": f"Path not found or unreadable: {silver_path}"
+            }
         
         initial_count = log_dataframe_stats(df, f"{content_type}_silver_read")
         
@@ -229,24 +239,43 @@ def process_content_type(
         gold_path = f"s3://{s3_bucket}/{gold_prefix}/content_enriched/{content_type}/ingest_date={ingest_date}/"
         
         print(f"\n💾 Writing to Gold (Parquet): {gold_path}")
-        write_with_stats(
-            enriched_df,
-            gold_path,
-            mode="overwrite",
-            format="parquet",
-            partition_by=None  # Already partitioned by folder structure
-        )
+        print(f"   Enriched records count: {enriched_count:,}")
+        try:
+            write_with_stats(
+                enriched_df,
+                gold_path,
+                mode="overwrite",
+                format="parquet",
+                partition_by=None  # Already partitioned by folder structure
+            )
+            print(f"✅ Successfully wrote {enriched_count:,} Parquet records to: {gold_path}")
+        except Exception as write_err:
+            print(f"❌ CRITICAL ERROR writing Parquet to {gold_path}")
+            print(f"   Error Type: {type(write_err).__name__}")
+            print(f"   Error Message: {str(write_err)}")
+            import traceback
+            traceback.print_exc()
+            raise
         
         # Also write to CSV for Redshift COPY (more compatible)
         csv_path = f"s3://{s3_bucket}/{gold_prefix}/content_enriched_csv/{content_type}/ingest_date={ingest_date}/"
         
         print(f"\n💾 Writing to Gold (CSV for Redshift): {csv_path}")
-        enriched_df.coalesce(1).write \
-            .mode("overwrite") \
-            .option("header", "true") \
-            .option("escape", '"') \
-            .option("quote", '"') \
-            .csv(csv_path)
+        try:
+            enriched_df.coalesce(1).write \
+                .mode("overwrite") \
+                .option("header", "true") \
+                .option("escape", '"') \
+                .option("quote", '"') \
+                .csv(csv_path)
+            print(f"✅ Successfully wrote CSV to: {csv_path}")
+        except Exception as csv_err:
+            print(f"❌ CRITICAL ERROR writing CSV to {csv_path}")
+            print(f"   Error Type: {type(csv_err).__name__}")
+            print(f"   Error Message: {str(csv_err)}")
+            import traceback
+            traceback.print_exc()
+            raise
         
         # Unpersist cache
         df.unpersist()
@@ -299,7 +328,8 @@ def main():
     spark = get_spark("SpaceNews-02-Enrich")
     
     # Process each content type
-    content_types = ["articles", "blogs", "reports", "info"]
+    # Note: Only process types that exist in Silver
+    content_types = ["articles", "blogs", "reports"]  # Remove "info" - doesn't exist in Silver
     results = []
     
     for content_type in content_types:
@@ -320,6 +350,7 @@ def main():
     
     total_initial = sum(r["initial_count"] for r in results)
     total_enriched = sum(r["enriched_count"] for r in results)
+    errors = [r for r in results if "error" in r]
     
     for result in results:
         print(f"\n{result['content_type']:10} | "
@@ -335,7 +366,16 @@ def main():
           f"Output: {total_enriched:5,}")
     print(f"{'='*80}")
     
-    print(f"\n✅ Job completed at: {datetime.now().isoformat()}")
+    # If any errors occurred, raise exception to mark job as failed
+    if errors:
+        error_msgs = "\n".join([f"  • {e['content_type']}: {e.get('error', 'Unknown error')}" for e in errors])
+        raise Exception(f"Job failed for {len(errors)} content types:\n{error_msgs}")
+    
+    if total_enriched == 0 and total_initial == 0:
+        raise Exception("Job completed but processed 0 records. Check if Silver data exists for this date.")
+    
+    print(f"\n✅ Job completed successfully at: {datetime.now().isoformat()}")
+    print(f"   Processed: {total_initial:,} → {total_enriched:,} records")
     
     spark.stop()
 
