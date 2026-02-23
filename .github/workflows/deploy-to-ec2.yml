@@ -1,0 +1,65 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+      - fix/*
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+      
+      - name: Deploy to EC2
+        run: |
+          ssh -i ~/.ssh/id_rsa ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << EOF
+          set -euo pipefail
+          
+          echo "🚀 Starting deployment..."
+          cd ${{ secrets.APP_PATH }}
+          
+          # Update code from main branch
+          echo "📥 Pulling latest code from GitHub..."
+          git fetch origin
+          git checkout main
+          git pull --ff-only origin main
+          
+          # Show commit info
+          echo "✅ Latest commit:"
+          git log -1 --oneline
+          
+          # Restart services (best effort for small instances)
+          if docker compose version >/dev/null 2>&1; then
+            COMPOSE_CMD="docker compose"
+          elif command -v docker-compose >/dev/null 2>&1; then
+            COMPOSE_CMD="docker-compose"
+          else
+            COMPOSE_CMD=""
+          fi
+
+          if [ -n "$COMPOSE_CMD" ]; then
+            echo "🔄 Updating containers with: $COMPOSE_CMD"
+            $COMPOSE_CMD pull || true
+            $COMPOSE_CMD up -d --remove-orphans || true
+            $COMPOSE_CMD ps || true
+            $COMPOSE_CMD exec -T airflow-scheduler airflow version || true
+          else
+            echo "⚠️ Docker Compose is not available on EC2. Code deployed only."
+          fi
+          
+          echo "✨ Deployment completed successfully!"
+          EOF
